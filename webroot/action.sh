@@ -1,11 +1,13 @@
 #!/system/bin/sh
 
-MODDIR=${0%/*}/..
+MODDIR=$(cd "${0%/*}/.." 2>/dev/null && pwd)
 CONFIG="$MODDIR/config.conf"
 STATE_DIR="$MODDIR/state"
 DISABLED_FILE="$STATE_DIR/disabled_by_module"
 STATUS_FILE="$STATE_DIR/status"
 LOG_FILE="$STATE_DIR/service.log"
+LOCK_DIR="$STATE_DIR/lock"
+SERVICE="$MODDIR/service.sh"
 
 mkdir -p "$STATE_DIR"
 
@@ -90,6 +92,15 @@ write_config() {
     } > "$TMP" && mv "$TMP" "$CONFIG"
 }
 
+service_pid() {
+    PID=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+        echo "$PID"
+        return 0
+    fi
+    return 1
+}
+
 print_config_json() {
     load_current
     validate_values
@@ -101,12 +112,20 @@ print_status_json() {
     STATUS=""
     DISABLED=""
     LOGS=""
+    PID=$(service_pid)
+    RUNNING=0
+    [ -n "$PID" ] && RUNNING=1
 
-    [ -f "$STATUS_FILE" ] && STATUS=$(cat "$STATUS_FILE" | json_escape)
+    if [ -f "$STATUS_FILE" ]; then
+        STATUS=$(cat "$STATUS_FILE" | json_escape)
+    else
+        STATUS=$(printf 'service_running=%s\nservice_pid=%s\nmodule_dir=%s\nstatus_file=missing\n' "$RUNNING" "$PID" "$MODDIR" | json_escape)
+    fi
+
     [ -f "$DISABLED_FILE" ] && DISABLED=$(cat "$DISABLED_FILE" | json_escape)
     [ -f "$LOG_FILE" ] && LOGS=$(tail -n 80 "$LOG_FILE" 2>/dev/null | json_escape)
 
-    printf '{"status":"%s","disabled":"%s","logs":"%s"}\n' "$STATUS" "$DISABLED" "$LOGS"
+    printf '{"running":%s,"pid":"%s","status":"%s","disabled":"%s","logs":"%s"}\n' "$RUNNING" "$PID" "$STATUS" "$DISABLED" "$LOGS"
 }
 
 resolve_iface() {
@@ -126,6 +145,26 @@ resolve_iface() {
     done
 
     echo wlan0
+}
+
+start_service() {
+    PID=$(service_pid)
+    if [ -n "$PID" ]; then
+        printf '{"ok":true,"message":"Service is already running. PID: %s"}\n' "$PID"
+        return
+    fi
+
+    rm -rf "$LOCK_DIR" 2>/dev/null
+    chmod 755 "$SERVICE" 2>/dev/null
+    /system/bin/sh "$SERVICE" >/dev/null 2>&1 &
+    sleep 1
+
+    PID=$(service_pid)
+    if [ -n "$PID" ]; then
+        printf '{"ok":true,"message":"Service started. PID: %s"}\n' "$PID"
+    else
+        echo '{"ok":false,"message":"Service did not start. Check module permissions and service.sh."}'
+    fi
 }
 
 reenable_all() {
@@ -178,6 +217,7 @@ case "$CMD" in
     get_config) print_config_json ;;
     get_status) print_status_json ;;
     save_config) save_from_args "$@" ;;
+    start_service) start_service ;;
     reenable_all) reenable_all ;;
     *) echo '{"ok":false,"message":"Unknown command."}' ;;
 esac
