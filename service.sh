@@ -1,6 +1,7 @@
 #!/system/bin/sh
 
 MODDIR=${0%/*}
+[ "$MODDIR" = "$0" ] && MODDIR=$(pwd)
 CONFIG="$MODDIR/config.conf"
 STATE_DIR="$MODDIR/state"
 DISABLED_FILE="$STATE_DIR/disabled_by_module"
