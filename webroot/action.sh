@@ -94,11 +94,12 @@ write_config() {
 
 service_pid() {
     PID=$(cat "$LOCK_DIR/pid" 2>/dev/null)
-    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-        echo "$PID"
-        return 0
-    fi
-    return 1
+    [ -n "$PID" ] || return 1
+    kill -0 "$PID" 2>/dev/null || return 1
+    CMD=$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null)
+    echo "$CMD" | grep -F "$MODDIR/service.sh" >/dev/null 2>&1 || return 1
+    echo "$PID"
+    return 0
 }
 
 print_config_json() {

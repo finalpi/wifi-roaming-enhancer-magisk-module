@@ -138,7 +138,16 @@ reenable_all_module_disabled() {
 
 cleanup() {
     reenable_all_module_disabled
+    rm -f "$LOCK_DIR/pid" "$LOCK_DIR/cmd" 2>/dev/null
     rmdir "$LOCK_DIR" 2>/dev/null
+}
+
+is_our_pid() {
+    PID="$1"
+    [ -n "$PID" ] || return 1
+    kill -0 "$PID" 2>/dev/null || return 1
+    CMD=$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null)
+    echo "$CMD" | grep -F "$MODDIR/service.sh" >/dev/null 2>&1
 }
 
 resolve_iface() {
@@ -271,7 +280,7 @@ disable_weak_networks() {
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     OLD_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null)
-    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    if is_our_pid "$OLD_PID"; then
         exit 0
     fi
     rm -rf "$LOCK_DIR"
@@ -281,6 +290,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 fi
 
 echo $$ > "$LOCK_DIR/pid"
+echo "$MODDIR/service.sh" > "$LOCK_DIR/cmd"
 trap cleanup INT TERM EXIT
 
 load_config
