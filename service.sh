@@ -9,7 +9,30 @@ STATUS_FILE="$STATE_DIR/status"
 LOG_FILE="$STATE_DIR/service.log"
 LOCK_DIR="$STATE_DIR/lock"
 TMP_DIR="$STATE_DIR/tmp"
+WPA_CLI=wpa_cli
 
+find_wpa_cli() {
+    for CANDIDATE in /vendor/bin/wpa_cli /system/bin/wpa_cli /system_ext/bin/wpa_cli /product/bin/wpa_cli wpa_cli; do
+        case "$CANDIDATE" in
+            /*)
+                if [ -x "$CANDIDATE" ]; then
+                    WPA_CLI="$CANDIDATE"
+                    return 0
+                fi
+                ;;
+            *)
+                FOUND=$(command -v "$CANDIDATE" 2>/dev/null)
+                if [ -n "$FOUND" ]; then
+                    WPA_CLI="$FOUND"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+    return 1
+}
+
+find_wpa_cli
 mkdir -p "$STATE_DIR" "$TMP_DIR"
 
 default_config() {
@@ -98,7 +121,7 @@ write_status() {
         echo "recovery_rssi=$RECOVERY_RSSI"
         echo "scan_interval=$SCAN_INTERVAL"
         echo "last_update=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
-        wpa_cli -i "$WIFI_IFACE_RESOLVED" status 2>/dev/null | grep -E '^(wpa_state|ssid|bssid|ip_address)='
+        "$WPA_CLI" -i "$WIFI_IFACE_RESOLVED" status 2>/dev/null | grep -E '^(wpa_state|ssid|bssid|ip_address)='
     } > "$STATUS_FILE.tmp"
     mv "$STATUS_FILE.tmp" "$STATUS_FILE"
 }
@@ -128,7 +151,7 @@ reenable_all_module_disabled() {
 
     while IFS='|' read -r ID SSID; do
         [ -z "$ID" ] && continue
-        if wpa_cli -i "$WIFI_IFACE_RESOLVED" enable_network "$ID" >/dev/null 2>&1; then
+        if "$WPA_CLI" -i "$WIFI_IFACE_RESOLVED" enable_network "$ID" >/dev/null 2>&1; then
             log_msg "re-enabled network id=$ID ssid=$SSID reason=all"
         fi
     done < "$DISABLED_FILE"
@@ -152,21 +175,21 @@ is_our_pid() {
 
 resolve_iface() {
     if [ "$WIFI_IFACE" != "auto" ]; then
-        if wpa_cli -i "$WIFI_IFACE" status >/dev/null 2>&1; then
+        if "$WPA_CLI" -i "$WIFI_IFACE" status >/dev/null 2>&1; then
             WIFI_IFACE_RESOLVED="$WIFI_IFACE"
             return 0
         fi
     fi
 
     for IFACE in wlan0 wlan1 wifi0; do
-        if wpa_cli -i "$IFACE" status >/dev/null 2>&1; then
+        if "$WPA_CLI" -i "$IFACE" status >/dev/null 2>&1; then
             WIFI_IFACE_RESOLVED="$IFACE"
             return 0
         fi
     done
 
     for IFACE in $(ip link show 2>/dev/null | awk -F: '/^[0-9]+: / {gsub(/ /,"",$2); print $2}' | grep -E '^(wlan|wl|wifi)'); do
-        if wpa_cli -i "$IFACE" status >/dev/null 2>&1; then
+        if "$WPA_CLI" -i "$IFACE" status >/dev/null 2>&1; then
             WIFI_IFACE_RESOLVED="$IFACE"
             return 0
         fi
@@ -178,7 +201,7 @@ resolve_iface() {
 
 build_saved_file() {
     OUT="$1"
-    wpa_cli -i "$WIFI_IFACE_RESOLVED" list_networks 2>/dev/null | awk -F '\t' '
+    "$WPA_CLI" -i "$WIFI_IFACE_RESOLVED" list_networks 2>/dev/null | awk -F '\t' '
         NR > 1 && $1 ~ /^[0-9]+$/ {
             print $1 "|" $2 "|" $4
         }
@@ -188,9 +211,9 @@ build_saved_file() {
 
 build_scan_file() {
     OUT="$1"
-    wpa_cli -i "$WIFI_IFACE_RESOLVED" scan >/dev/null 2>&1
+    "$WPA_CLI" -i "$WIFI_IFACE_RESOLVED" scan >/dev/null 2>&1
     sleep 2
-    wpa_cli -i "$WIFI_IFACE_RESOLVED" scan_results 2>/dev/null | awk -F '\t' '
+    "$WPA_CLI" -i "$WIFI_IFACE_RESOLVED" scan_results 2>/dev/null | awk -F '\t' '
         NR > 1 && $3 ~ /^-?[0-9]+$/ && $5 != "" {
             ssid=$5
             for (i=6; i<=NF; i++) ssid=ssid "\t" $i
@@ -237,7 +260,7 @@ recover_networks() {
             continue
         fi
         if is_int "$MATCH" && [ "$MATCH" -ge "$RECOVERY_RSSI" ]; then
-            if wpa_cli -i "$WIFI_IFACE_RESOLVED" enable_network "$ID" >/dev/null 2>&1; then
+            if "$WPA_CLI" -i "$WIFI_IFACE_RESOLVED" enable_network "$ID" >/dev/null 2>&1; then
                 log_msg "re-enabled network id=$ID ssid=$SSID rssi=$MATCH threshold=$RECOVERY_RSSI"
                 remove_disabled_id "$ID"
             fi
@@ -267,7 +290,7 @@ disable_weak_networks() {
             continue
         fi
 
-        if wpa_cli -i "$WIFI_IFACE_RESOLVED" disable_network "$ID" >/dev/null 2>&1; then
+        if "$WPA_CLI" -i "$WIFI_IFACE_RESOLVED" disable_network "$ID" >/dev/null 2>&1; then
             add_disabled_id "$ID" "$SSID"
             AVAILABLE=$((AVAILABLE - 1))
             DISABLED_THIS_SCAN=$((DISABLED_THIS_SCAN + 1))
@@ -295,7 +318,7 @@ trap cleanup INT TERM EXIT
 
 load_config
 resolve_iface
-log_msg "service started iface=$WIFI_IFACE_RESOLVED"
+log_msg "service started iface=$WIFI_IFACE_RESOLVED wpa_cli=$WPA_CLI"
 reenable_all_module_disabled
 DISCONNECTED_CYCLES=0
 
@@ -340,7 +363,7 @@ while true; do
     recover_networks "$VISIBLE_FILE"
     disable_weak_networks "$VISIBLE_FILE"
 
-    if wpa_cli -i "$WIFI_IFACE_RESOLVED" status 2>/dev/null | grep -F 'wpa_state=COMPLETED' >/dev/null 2>&1; then
+    if "$WPA_CLI" -i "$WIFI_IFACE_RESOLVED" status 2>/dev/null | grep -F 'wpa_state=COMPLETED' >/dev/null 2>&1; then
         DISCONNECTED_CYCLES=0
     else
         DISCONNECTED_CYCLES=$((DISCONNECTED_CYCLES + 1))

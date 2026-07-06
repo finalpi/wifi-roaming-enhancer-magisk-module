@@ -8,7 +8,30 @@ STATUS_FILE="$STATE_DIR/status"
 LOG_FILE="$STATE_DIR/service.log"
 LOCK_DIR="$STATE_DIR/lock"
 SERVICE="$MODDIR/service.sh"
+WPA_CLI=wpa_cli
 
+find_wpa_cli() {
+    for CANDIDATE in /vendor/bin/wpa_cli /system/bin/wpa_cli /system_ext/bin/wpa_cli /product/bin/wpa_cli wpa_cli; do
+        case "$CANDIDATE" in
+            /*)
+                if [ -x "$CANDIDATE" ]; then
+                    WPA_CLI="$CANDIDATE"
+                    return 0
+                fi
+                ;;
+            *)
+                FOUND=$(command -v "$CANDIDATE" 2>/dev/null)
+                if [ -n "$FOUND" ]; then
+                    WPA_CLI="$FOUND"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+    return 1
+}
+
+find_wpa_cli
 mkdir -p "$STATE_DIR"
 
 json_escape() {
@@ -120,7 +143,7 @@ print_status_json() {
     if [ -f "$STATUS_FILE" ]; then
         STATUS=$(cat "$STATUS_FILE" | json_escape)
     else
-        STATUS=$(printf 'service_running=%s\nservice_pid=%s\nmodule_dir=%s\nstatus_file=missing\n' "$RUNNING" "$PID" "$MODDIR" | json_escape)
+        STATUS=$(printf 'service_running=%s\nservice_pid=%s\nmodule_dir=%s\nwpa_cli=%s\nstatus_file=missing\n' "$RUNNING" "$PID" "$MODDIR" "$WPA_CLI" | json_escape)
     fi
 
     [ -f "$DISABLED_FILE" ] && DISABLED=$(cat "$DISABLED_FILE" | json_escape)
@@ -133,13 +156,13 @@ resolve_iface() {
     load_current
     validate_values
 
-    if [ "$WIFI_IFACE" != "auto" ] && wpa_cli -i "$WIFI_IFACE" status >/dev/null 2>&1; then
+    if [ "$WIFI_IFACE" != "auto" ] && "$WPA_CLI" -i "$WIFI_IFACE" status >/dev/null 2>&1; then
         echo "$WIFI_IFACE"
         return
     fi
 
     for IFACE in wlan0 wlan1 wifi0; do
-        if wpa_cli -i "$IFACE" status >/dev/null 2>&1; then
+        if "$WPA_CLI" -i "$IFACE" status >/dev/null 2>&1; then
             echo "$IFACE"
             return
         fi
@@ -178,7 +201,7 @@ reenable_all() {
     COUNT=0
     while IFS='|' read -r ID SSID; do
         [ -z "$ID" ] && continue
-        if wpa_cli -i "$IFACE" enable_network "$ID" >/dev/null 2>&1; then
+        if "$WPA_CLI" -i "$IFACE" enable_network "$ID" >/dev/null 2>&1; then
             COUNT=$((COUNT + 1))
         fi
     done < "$DISABLED_FILE"
