@@ -93,6 +93,22 @@ input, select {
     font-size: 13px;
 }
 
+details {
+    margin-top: 14px;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+}
+
+summary {
+    cursor: pointer;
+    color: var(--primary);
+    font-weight: 650;
+}
+
+.advanced-grid {
+    margin-top: 14px;
+}
+
 .actions {
     display: flex;
     flex-wrap: wrap;

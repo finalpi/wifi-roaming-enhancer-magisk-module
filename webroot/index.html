@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,79 +10,90 @@
 <main>
     <header>
         <h1>WiFi Roaming Enhancer</h1>
-        <p class="subtitle">Temporarily avoid saved Wi-Fi networks when their signal is too weak.</p>
+        <p class="subtitle">弱 Wi‑Fi 自动避开：信号太弱就临时不连接，信号恢复后自动允许连接。</p>
     </header>
 
     <section class="card">
-        <h2>Configuration</h2>
+        <h2>常用设置</h2>
         <form id="configForm">
             <div class="grid">
                 <label>
-                    Module enabled
+                    功能开关
                     <select name="ENABLED">
-                        <option value="1">Enabled</option>
-                        <option value="0">Disabled</option>
+                        <option value="1" selected>开启</option>
+                        <option value="0">关闭</option>
                     </select>
                 </label>
                 <label>
-                    Wi-Fi interface
-                    <input name="WIFI_IFACE" placeholder="auto or wlan0">
+                    避开弱 Wi‑Fi 阈值
+                    <input name="DISABLE_RSSI" type="number" min="-100" max="-30" value="-75">
                 </label>
                 <label>
-                    Scan interval, seconds
-                    <input name="SCAN_INTERVAL" type="number" min="5" max="300">
+                    恢复连接阈值
+                    <input name="RECOVERY_RSSI" type="number" min="-100" max="-30" value="-67">
                 </label>
                 <label>
-                    Disable below RSSI
-                    <input name="DISABLE_RSSI" type="number" min="-100" max="-30">
-                </label>
-                <label>
-                    Recover at RSSI
-                    <input name="RECOVERY_RSSI" type="number" min="-100" max="-30">
-                </label>
-                <label>
-                    Min enabled visible networks
-                    <input name="MIN_AVAILABLE_NETWORKS" type="number" min="1" max="20">
-                </label>
-                <label>
-                    Max disables per scan
-                    <input name="MAX_DISABLE_PER_SCAN" type="number" min="1" max="20">
-                </label>
-                <label>
-                    Logging
-                    <select name="LOG_ENABLED">
-                        <option value="1">Enabled</option>
-                        <option value="0">Disabled</option>
-                    </select>
-                </label>
-                <label>
-                    Max log lines
-                    <input name="LOG_MAX_LINES" type="number" min="50" max="1000">
+                    扫描间隔，秒
+                    <input name="SCAN_INTERVAL" type="number" min="5" max="300" value="10">
                 </label>
             </div>
-            <p class="help">Recommended: disable below -75 dBm and recover at -67 dBm. Recovery should be higher than disable to avoid flapping.</p>
+
+            <p class="help">
+                推荐保持默认值：低于 <b>-75 dBm</b> 临时禁用，高于 <b>-67 dBm</b> 恢复。
+                数值越接近 0 表示信号越强，例如 -60 比 -80 强。
+            </p>
+
+            <details>
+                <summary>高级设置，一般不用改</summary>
+                <div class="grid advanced-grid">
+                    <label>
+                        Wi‑Fi 网卡名
+                        <input name="WIFI_IFACE" value="auto" placeholder="auto 或 wlan0">
+                    </label>
+                    <label>
+                        至少保留可用网络数
+                        <input name="MIN_AVAILABLE_NETWORKS" type="number" min="1" max="20" value="1">
+                    </label>
+                    <label>
+                        每轮最多禁用数量
+                        <input name="MAX_DISABLE_PER_SCAN" type="number" min="1" max="20" value="3">
+                    </label>
+                    <label>
+                        日志开关
+                        <select name="LOG_ENABLED">
+                            <option value="1" selected>开启</option>
+                            <option value="0">关闭</option>
+                        </select>
+                    </label>
+                    <label>
+                        最大日志行数
+                        <input name="LOG_MAX_LINES" type="number" min="50" max="1000" value="200">
+                    </label>
+                </div>
+            </details>
+
             <div class="actions">
-                <button type="submit">Save config</button>
-                <button type="button" class="secondary" id="refreshBtn">Refresh</button>
-                <button type="button" class="danger" id="reenableBtn">Re-enable all</button>
+                <button type="submit">保存设置</button>
+                <button type="button" class="secondary" id="refreshBtn">刷新状态</button>
+                <button type="button" class="danger" id="reenableBtn">恢复所有临时禁用网络</button>
             </div>
         </form>
-        <p id="message" class="message"></p>
+        <p id="message" class="message">如果页面刚打开没有读到配置，会先显示推荐默认值。</p>
     </section>
 
     <section class="card">
-        <h2>Status</h2>
-        <pre id="status">Loading…</pre>
+        <h2>当前状态</h2>
+        <pre id="status">等待刷新…</pre>
     </section>
 
     <section class="card">
-        <h2>Module-disabled networks</h2>
-        <pre id="disabled">Loading…</pre>
+        <h2>本模块临时禁用的网络</h2>
+        <pre id="disabled">无</pre>
     </section>
 
     <section class="card">
-        <h2>Recent log</h2>
-        <pre id="logs">Loading…</pre>
+        <h2>最近日志</h2>
+        <pre id="logs">暂无日志</pre>
     </section>
 </main>
 
@@ -116,33 +127,37 @@ async function callAction(args) {
     return JSON.parse(output.trim() || '{}');
 }
 
+function fillConfig(config) {
+    if (config.enabled !== undefined) form.ENABLED.value = String(config.enabled);
+    if (config.wifi_iface !== undefined) form.WIFI_IFACE.value = config.wifi_iface;
+    if (config.scan_interval !== undefined) form.SCAN_INTERVAL.value = config.scan_interval;
+    if (config.disable_rssi !== undefined) form.DISABLE_RSSI.value = config.disable_rssi;
+    if (config.recovery_rssi !== undefined) form.RECOVERY_RSSI.value = config.recovery_rssi;
+    if (config.min_available_networks !== undefined) form.MIN_AVAILABLE_NETWORKS.value = config.min_available_networks;
+    if (config.max_disable_per_scan !== undefined) form.MAX_DISABLE_PER_SCAN.value = config.max_disable_per_scan;
+    if (config.log_enabled !== undefined) form.LOG_ENABLED.value = String(config.log_enabled);
+    if (config.log_max_lines !== undefined) form.LOG_MAX_LINES.value = config.log_max_lines;
+}
+
 async function loadConfig() {
     const config = await callAction(['get_config']);
-    form.ENABLED.value = String(config.enabled);
-    form.WIFI_IFACE.value = config.wifi_iface;
-    form.SCAN_INTERVAL.value = config.scan_interval;
-    form.DISABLE_RSSI.value = config.disable_rssi;
-    form.RECOVERY_RSSI.value = config.recovery_rssi;
-    form.MIN_AVAILABLE_NETWORKS.value = config.min_available_networks;
-    form.MAX_DISABLE_PER_SCAN.value = config.max_disable_per_scan;
-    form.LOG_ENABLED.value = String(config.log_enabled);
-    form.LOG_MAX_LINES.value = config.log_max_lines;
+    fillConfig(config);
 }
 
 async function loadStatus() {
     const data = await callAction(['get_status']);
-    document.getElementById('status').textContent = data.status || 'No status yet. Wait for the daemon to complete a scan.';
-    document.getElementById('disabled').textContent = data.disabled || 'None';
-    document.getElementById('logs').textContent = data.logs || 'No log entries yet.';
+    document.getElementById('status').textContent = data.status || '暂无状态。等待后台服务完成一次扫描后再刷新。';
+    document.getElementById('disabled').textContent = data.disabled || '无';
+    document.getElementById('logs').textContent = data.logs || '暂无日志。';
 }
 
 async function refreshAll() {
     try {
         await loadConfig();
         await loadStatus();
-        setMessage('Refreshed.');
+        setMessage('已刷新。');
     } catch (error) {
-        setMessage('Failed to refresh. Open this page from KernelSU WebUI so root commands are available. ' + error, false);
+        setMessage('未能读取后台配置，页面已显示推荐默认值。请确认是从 KernelSU 的模块 WebUI 打开。' + error, false);
     }
 }
 
@@ -156,10 +171,10 @@ form.addEventListener('submit', async (event) => {
 
     try {
         const result = await callAction(args);
-        setMessage(result.message || 'Saved.', result.ok !== false);
+        setMessage(result.message || '已保存，后台服务会在下一轮扫描自动读取。', result.ok !== false);
         await refreshAll();
     } catch (error) {
-        setMessage('Failed to save: ' + error, false);
+        setMessage('保存失败：' + error, false);
     }
 });
 
@@ -168,10 +183,10 @@ document.getElementById('refreshBtn').addEventListener('click', refreshAll);
 document.getElementById('reenableBtn').addEventListener('click', async () => {
     try {
         const result = await callAction(['reenable_all']);
-        setMessage(result.message || 'Done.', result.ok !== false);
+        setMessage(result.message || '已恢复。', result.ok !== false);
         await loadStatus();
     } catch (error) {
-        setMessage('Failed to re-enable: ' + error, false);
+        setMessage('恢复失败：' + error, false);
     }
 });
 
