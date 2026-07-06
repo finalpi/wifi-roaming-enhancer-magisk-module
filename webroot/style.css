@@ -1,0 +1,140 @@
+:root {
+    color-scheme: light dark;
+    --bg: #f6f7fb;
+    --card: #ffffff;
+    --text: #151821;
+    --muted: #647084;
+    --line: #dfe4ee;
+    --primary: #2563eb;
+    --danger: #dc2626;
+    --ok: #16a34a;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0f1117;
+        --card: #171b25;
+        --text: #f4f7fb;
+        --muted: #9aa5b5;
+        --line: #2b3242;
+        --primary: #60a5fa;
+        --danger: #f87171;
+        --ok: #4ade80;
+    }
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 20px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+main {
+    max-width: 760px;
+    margin: 0 auto;
+}
+
+header { margin-bottom: 18px; }
+
+h1 {
+    margin: 0 0 6px;
+    font-size: 26px;
+}
+
+.subtitle {
+    margin: 0;
+    color: var(--muted);
+}
+
+.card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 18px;
+    margin: 14px 0;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+h2 {
+    margin: 0 0 14px;
+    font-size: 18px;
+}
+
+.grid {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+label {
+    display: grid;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+input, select {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 11px 12px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+}
+
+.help {
+    margin: 12px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+button {
+    border: 0;
+    border-radius: 999px;
+    padding: 11px 16px;
+    background: var(--primary);
+    color: white;
+    font: inherit;
+    font-weight: 650;
+}
+
+button.secondary {
+    background: transparent;
+    color: var(--primary);
+    border: 1px solid var(--primary);
+}
+
+button.danger {
+    background: var(--danger);
+}
+
+pre {
+    overflow: auto;
+    min-height: 42px;
+    margin: 0;
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(100, 116, 139, 0.12);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.message {
+    min-height: 24px;
+    color: var(--muted);
+}
+
+.message.ok { color: var(--ok); }
+.message.error { color: var(--danger); }

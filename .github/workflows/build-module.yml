@@ -1,0 +1,88 @@
+name: Build Magisk / KernelSU Module
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Package module zip
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read module metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODULE_ID=$(grep '^id=' module.prop | cut -d= -f2-)
+          VERSION=$(grep '^version=' module.prop | cut -d= -f2-)
+          VERSION_CODE=$(grep '^versionCode=' module.prop | cut -d= -f2-)
+          echo "module_id=${MODULE_ID}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "zip_name=${MODULE_ID}-v${VERSION}-${VERSION_CODE}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Validate required files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f module.prop
+          test -f service.sh
+          test -f post-fs-data.sh
+          test -f config.conf
+          test -f webroot/index.html
+          test -f webroot/style.css
+          test -f webroot/action.sh
+          test -f META-INF/com/google/android/update-binary
+          test -f META-INF/com/google/android/update-script
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n service.sh post-fs-data.sh webroot/action.sh META-INF/com/google/android/update-binary
+
+      - name: Prepare package directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist package
+          mkdir -p package dist
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.idea' \
+            --exclude='dist' \
+            --exclude='package' \
+            --exclude='*.zip' \
+            ./ package/
+          chmod 0755 package/service.sh package/post-fs-data.sh package/webroot/action.sh
+
+      - name: Build zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd package
+          zip -r9 "../dist/${{ steps.meta.outputs.zip_name }}" . \
+            -x '*.git*' \
+            -x '.idea/*' \
+            -x '.github/*'
+          cd ..
+          unzip -l "dist/${{ steps.meta.outputs.zip_name }}"
+
+      - name: Upload module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.module_id }}-module
+          path: dist/${{ steps.meta.outputs.zip_name }}
+          if-no-files-found: error

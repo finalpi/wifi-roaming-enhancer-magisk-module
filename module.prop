@@ -1,6 +1,6 @@
 id=wifi_roaming_enhancer
 name=WiFi Roaming Enhancer Ultimate
-version=1.1
-versionCode=3
+version=1.2
+versionCode=4
 author=Ian7672
-description=Smart WiFi Roaming: auto-detect interface, RSSI+Latency+Bandwidth, seamless, ideal for gaming & streaming
+description=Smart WiFi avoidance: temporarily disables weak saved networks, recovers them when RSSI improves, with KernelSU WebUI configuration

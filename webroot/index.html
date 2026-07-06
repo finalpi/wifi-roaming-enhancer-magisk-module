@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WiFi Roaming Enhancer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+    <header>
+        <h1>WiFi Roaming Enhancer</h1>
+        <p class="subtitle">Temporarily avoid saved Wi-Fi networks when their signal is too weak.</p>
+    </header>
+
+    <section class="card">
+        <h2>Configuration</h2>
+        <form id="configForm">
+            <div class="grid">
+                <label>
+                    Module enabled
+                    <select name="ENABLED">
+                        <option value="1">Enabled</option>
+                        <option value="0">Disabled</option>
+                    </select>
+                </label>
+                <label>
+                    Wi-Fi interface
+                    <input name="WIFI_IFACE" placeholder="auto or wlan0">
+                </label>
+                <label>
+                    Scan interval, seconds
+                    <input name="SCAN_INTERVAL" type="number" min="5" max="300">
+                </label>
+                <label>
+                    Disable below RSSI
+                    <input name="DISABLE_RSSI" type="number" min="-100" max="-30">
+                </label>
+                <label>
+                    Recover at RSSI
+                    <input name="RECOVERY_RSSI" type="number" min="-100" max="-30">
+                </label>
+                <label>
+                    Min enabled visible networks
+                    <input name="MIN_AVAILABLE_NETWORKS" type="number" min="1" max="20">
+                </label>
+                <label>
+                    Max disables per scan
+                    <input name="MAX_DISABLE_PER_SCAN" type="number" min="1" max="20">
+                </label>
+                <label>
+                    Logging
+                    <select name="LOG_ENABLED">
+                        <option value="1">Enabled</option>
+                        <option value="0">Disabled</option>
+                    </select>
+                </label>
+                <label>
+                    Max log lines
+                    <input name="LOG_MAX_LINES" type="number" min="50" max="1000">
+                </label>
+            </div>
+            <p class="help">Recommended: disable below -75 dBm and recover at -67 dBm. Recovery should be higher than disable to avoid flapping.</p>
+            <div class="actions">
+                <button type="submit">Save config</button>
+                <button type="button" class="secondary" id="refreshBtn">Refresh</button>
+                <button type="button" class="danger" id="reenableBtn">Re-enable all</button>
+            </div>
+        </form>
+        <p id="message" class="message"></p>
+    </section>
+
+    <section class="card">
+        <h2>Status</h2>
+        <pre id="status">Loading…</pre>
+    </section>
+
+    <section class="card">
+        <h2>Module-disabled networks</h2>
+        <pre id="disabled">Loading…</pre>
+    </section>
+
+    <section class="card">
+        <h2>Recent log</h2>
+        <pre id="logs">Loading…</pre>
+    </section>
+</main>
+
+<script>
+const form = document.getElementById('configForm');
+const message = document.getElementById('message');
+
+function setMessage(text, ok = true) {
+    message.textContent = text;
+    message.className = ok ? 'message ok' : 'message error';
+}
+
+function shellQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
+async function execShell(command) {
+    if (window.ksu && typeof window.ksu.exec === 'function') {
+        const result = await window.ksu.exec(command);
+        if (typeof result === 'string') return result;
+        return result.stdout || result.out || result.result || '';
+    }
+
+    const response = await fetch('action.sh?' + encodeURIComponent(command));
+    return response.text();
+}
+
+async function callAction(args) {
+    const command = './action.sh ' + args.map(shellQuote).join(' ');
+    const output = await execShell(command);
+    return JSON.parse(output.trim() || '{}');
+}
+
+async function loadConfig() {
+    const config = await callAction(['get_config']);
+    form.ENABLED.value = String(config.enabled);
+    form.WIFI_IFACE.value = config.wifi_iface;
+    form.SCAN_INTERVAL.value = config.scan_interval;
+    form.DISABLE_RSSI.value = config.disable_rssi;
+    form.RECOVERY_RSSI.value = config.recovery_rssi;
+    form.MIN_AVAILABLE_NETWORKS.value = config.min_available_networks;
+    form.MAX_DISABLE_PER_SCAN.value = config.max_disable_per_scan;
+    form.LOG_ENABLED.value = String(config.log_enabled);
+    form.LOG_MAX_LINES.value = config.log_max_lines;
+}
+
+async function loadStatus() {
+    const data = await callAction(['get_status']);
+    document.getElementById('status').textContent = data.status || 'No status yet. Wait for the daemon to complete a scan.';
+    document.getElementById('disabled').textContent = data.disabled || 'None';
+    document.getElementById('logs').textContent = data.logs || 'No log entries yet.';
+}
+
+async function refreshAll() {
+    try {
+        await loadConfig();
+        await loadStatus();
+        setMessage('Refreshed.');
+    } catch (error) {
+        setMessage('Failed to refresh. Open this page from KernelSU WebUI so root commands are available. ' + error, false);
+    }
+}
+
+form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const args = ['save_config'];
+    for (const [key, value] of data.entries()) {
+        args.push(key + '=' + value);
+    }
+
+    try {
+        const result = await callAction(args);
+        setMessage(result.message || 'Saved.', result.ok !== false);
+        await refreshAll();
+    } catch (error) {
+        setMessage('Failed to save: ' + error, false);
+    }
+});
+
+document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+
+document.getElementById('reenableBtn').addEventListener('click', async () => {
+    try {
+        const result = await callAction(['reenable_all']);
+        setMessage(result.message || 'Done.', result.ok !== false);
+        await loadStatus();
+    } catch (error) {
+        setMessage('Failed to re-enable: ' + error, false);
+    }
+});
+
+refreshAll();
+</script>
+</body>
+</html>

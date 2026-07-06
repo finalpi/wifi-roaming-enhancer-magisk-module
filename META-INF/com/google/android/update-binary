@@ -1,29 +1,28 @@
 #!/system/bin/sh
-# Magisk update-binary minimal untuk modul zip
-
-# Magisk menjalankan script ini dengan 3 argumen:
-# $1 -> API level (ignored)
-# $2 -> PATH_MOD_ZIP (path folder sementara zip diekstrak)
-# $3 -> PATH_TMP (temporary folder)
+# Minimal installer for recovery-style module zips.
 
 MODPATH=$2
+TARGET_DIR="/data/adb/modules/wifi_roaming_enhancer"
 
 ui_print() {
     echo "$1"
 }
 
-ui_print "Installing WiFi Roaming Enhancer Ultimate..."
-# copy semua file ke modul path permanen
 run_program() {
     "$@"
 }
 
-# pastikan folder target ada
-TARGET_DIR="/data/adb/modules/wifi-roaming-enhancer"
-mkdir -p $TARGET_DIR
+ui_print "Installing WiFi Roaming Enhancer Ultimate..."
+mkdir -p "$TARGET_DIR"
 
-# copy file dari zip
-run_program /system/bin/busybox cp -af $MODPATH/* $TARGET_DIR/
+if [ -x /system/bin/busybox ]; then
+    run_program /system/bin/busybox cp -af "$MODPATH"/* "$TARGET_DIR"/
+else
+    cp -af "$MODPATH"/* "$TARGET_DIR"/
+fi
+
+chmod 755 "$TARGET_DIR/service.sh" "$TARGET_DIR/post-fs-data.sh" 2>/dev/null
+chmod 755 "$TARGET_DIR/webroot/action.sh" 2>/dev/null
 
 ui_print "Installation complete!"
 exit 0

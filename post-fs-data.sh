@@ -1,3 +1,4 @@
 #!/system/bin/sh
-# Jalankan service.sh saat boot
-/system/bin/sh /data/adb/modules/wifi-roaming-enhancer/service.sh &
+# Start service.sh from this module directory during boot.
+MODDIR=${0%/*}
+/system/bin/sh "$MODDIR/service.sh" &
