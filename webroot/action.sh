@@ -9,6 +9,7 @@ LOG_FILE="$STATE_DIR/service.log"
 LOCK_DIR="$STATE_DIR/lock"
 SERVICE="$MODDIR/service.sh"
 WPA_CLI=wpa_cli
+WPA_CLI_TIMEOUT=5
 
 find_wpa_cli() {
     for CANDIDATE in /vendor/bin/wpa_cli /system/bin/wpa_cli /system_ext/bin/wpa_cli /product/bin/wpa_cli wpa_cli; do
@@ -66,14 +67,32 @@ clamp_int() {
     fi
 }
 
+run_timeout() {
+    SECONDS_LIMIT="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$SECONDS_LIMIT" "$@"
+    else
+        "$@"
+    fi
+}
+
+wpa() {
+    run_timeout "$WPA_CLI_TIMEOUT" "$WPA_CLI" "$@"
+}
+
 load_current() {
     ENABLED=1
+    CONTROL_MODE=auto
     WIFI_IFACE=auto
     SCAN_INTERVAL=10
     DISABLE_RSSI=-75
     RECOVERY_RSSI=-67
     MIN_AVAILABLE_NETWORKS=1
     MAX_DISABLE_PER_SCAN=3
+    FALLBACK_WIFI_OFF_SECONDS=3
+    FALLBACK_COOLDOWN_SECONDS=120
+    FALLBACK_WEAK_COUNT=2
     LOG_ENABLED=1
     LOG_MAX_LINES=200
     [ -f "$CONFIG" ] && . "$CONFIG"
@@ -86,8 +105,16 @@ validate_values() {
     RECOVERY_RSSI=$(clamp_int "$RECOVERY_RSSI" -100 -30 -67)
     MIN_AVAILABLE_NETWORKS=$(clamp_int "$MIN_AVAILABLE_NETWORKS" 1 20 1)
     MAX_DISABLE_PER_SCAN=$(clamp_int "$MAX_DISABLE_PER_SCAN" 1 20 3)
+    FALLBACK_WIFI_OFF_SECONDS=$(clamp_int "$FALLBACK_WIFI_OFF_SECONDS" 1 120 3)
+    FALLBACK_COOLDOWN_SECONDS=$(clamp_int "$FALLBACK_COOLDOWN_SECONDS" 30 3600 120)
+    FALLBACK_WEAK_COUNT=$(clamp_int "$FALLBACK_WEAK_COUNT" 1 10 2)
     LOG_ENABLED=$(clamp_int "$LOG_ENABLED" 0 1 1)
     LOG_MAX_LINES=$(clamp_int "$LOG_MAX_LINES" 50 1000 200)
+
+    case "$CONTROL_MODE" in
+        auto|wpa_cli|wifi_restart) ;;
+        *) CONTROL_MODE=auto ;;
+    esac
 
     case "$WIFI_IFACE" in
         ''|*[!A-Za-z0-9_.:-]*) WIFI_IFACE=auto ;;
@@ -104,12 +131,16 @@ write_config() {
     {
         echo "# WiFi Roaming Enhancer configuration"
         echo "ENABLED=$ENABLED"
+        echo "CONTROL_MODE=$CONTROL_MODE"
         echo "WIFI_IFACE=$WIFI_IFACE"
         echo "SCAN_INTERVAL=$SCAN_INTERVAL"
         echo "DISABLE_RSSI=$DISABLE_RSSI"
         echo "RECOVERY_RSSI=$RECOVERY_RSSI"
         echo "MIN_AVAILABLE_NETWORKS=$MIN_AVAILABLE_NETWORKS"
         echo "MAX_DISABLE_PER_SCAN=$MAX_DISABLE_PER_SCAN"
+        echo "FALLBACK_WIFI_OFF_SECONDS=$FALLBACK_WIFI_OFF_SECONDS"
+        echo "FALLBACK_COOLDOWN_SECONDS=$FALLBACK_COOLDOWN_SECONDS"
+        echo "FALLBACK_WEAK_COUNT=$FALLBACK_WEAK_COUNT"
         echo "LOG_ENABLED=$LOG_ENABLED"
         echo "LOG_MAX_LINES=$LOG_MAX_LINES"
     } > "$TMP" && mv "$TMP" "$CONFIG"
@@ -128,8 +159,8 @@ service_pid() {
 print_config_json() {
     load_current
     validate_values
-    printf '{"enabled":%s,"wifi_iface":"%s","scan_interval":%s,"disable_rssi":%s,"recovery_rssi":%s,"min_available_networks":%s,"max_disable_per_scan":%s,"log_enabled":%s,"log_max_lines":%s}\n' \
-        "$ENABLED" "$WIFI_IFACE" "$SCAN_INTERVAL" "$DISABLE_RSSI" "$RECOVERY_RSSI" "$MIN_AVAILABLE_NETWORKS" "$MAX_DISABLE_PER_SCAN" "$LOG_ENABLED" "$LOG_MAX_LINES"
+    printf '{"enabled":%s,"control_mode":"%s","wifi_iface":"%s","scan_interval":%s,"disable_rssi":%s,"recovery_rssi":%s,"min_available_networks":%s,"max_disable_per_scan":%s,"fallback_wifi_off_seconds":%s,"fallback_cooldown_seconds":%s,"fallback_weak_count":%s,"log_enabled":%s,"log_max_lines":%s}\n' \
+        "$ENABLED" "$CONTROL_MODE" "$WIFI_IFACE" "$SCAN_INTERVAL" "$DISABLE_RSSI" "$RECOVERY_RSSI" "$MIN_AVAILABLE_NETWORKS" "$MAX_DISABLE_PER_SCAN" "$FALLBACK_WIFI_OFF_SECONDS" "$FALLBACK_COOLDOWN_SECONDS" "$FALLBACK_WEAK_COUNT" "$LOG_ENABLED" "$LOG_MAX_LINES"
 }
 
 print_status_json() {
@@ -156,13 +187,13 @@ resolve_iface() {
     load_current
     validate_values
 
-    if [ "$WIFI_IFACE" != "auto" ] && "$WPA_CLI" -i "$WIFI_IFACE" status >/dev/null 2>&1; then
+    if [ "$WIFI_IFACE" != "auto" ] && wpa -i "$WIFI_IFACE" status >/dev/null 2>&1; then
         echo "$WIFI_IFACE"
         return
     fi
 
     for IFACE in wlan0 wlan1 wifi0; do
-        if "$WPA_CLI" -i "$IFACE" status >/dev/null 2>&1; then
+        if wpa -i "$IFACE" status >/dev/null 2>&1; then
             echo "$IFACE"
             return
         fi
@@ -192,16 +223,16 @@ start_service() {
 }
 
 reenable_all() {
-    IFACE=$(resolve_iface)
     [ -f "$DISABLED_FILE" ] || {
-        echo '{"ok":true,"message":"No module-disabled networks."}'
+        echo '{"ok":true,"message":"No module-disabled networks. Fallback mode does not disable saved networks."}'
         return
     }
 
+    IFACE=$(resolve_iface)
     COUNT=0
     while IFS='|' read -r ID SSID; do
         [ -z "$ID" ] && continue
-        if "$WPA_CLI" -i "$IFACE" enable_network "$ID" >/dev/null 2>&1; then
+        if wpa -i "$IFACE" enable_network "$ID" >/dev/null 2>&1; then
             COUNT=$((COUNT + 1))
         fi
     done < "$DISABLED_FILE"
@@ -218,12 +249,16 @@ save_from_args() {
         VALUE=${ARG#*=}
         case "$KEY" in
             ENABLED) ENABLED="$VALUE" ;;
+            CONTROL_MODE) CONTROL_MODE="$VALUE" ;;
             WIFI_IFACE) WIFI_IFACE="$VALUE" ;;
             SCAN_INTERVAL) SCAN_INTERVAL="$VALUE" ;;
             DISABLE_RSSI) DISABLE_RSSI="$VALUE" ;;
             RECOVERY_RSSI) RECOVERY_RSSI="$VALUE" ;;
             MIN_AVAILABLE_NETWORKS) MIN_AVAILABLE_NETWORKS="$VALUE" ;;
             MAX_DISABLE_PER_SCAN) MAX_DISABLE_PER_SCAN="$VALUE" ;;
+            FALLBACK_WIFI_OFF_SECONDS) FALLBACK_WIFI_OFF_SECONDS="$VALUE" ;;
+            FALLBACK_COOLDOWN_SECONDS) FALLBACK_COOLDOWN_SECONDS="$VALUE" ;;
+            FALLBACK_WEAK_COUNT) FALLBACK_WEAK_COUNT="$VALUE" ;;
             LOG_ENABLED) LOG_ENABLED="$VALUE" ;;
             LOG_MAX_LINES) LOG_MAX_LINES="$VALUE" ;;
         esac

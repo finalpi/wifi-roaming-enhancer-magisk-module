@@ -1,6 +1,6 @@
 id=wifi_roaming_enhancer
 name=WiFi Roaming Enhancer Ultimate
-version=1.2
-versionCode=4
+version=1.3
+versionCode=5
 author=Ian7672
-description=Smart WiFi avoidance: temporarily disables weak saved networks, recovers them when RSSI improves, with KernelSU WebUI configuration
+description=Smart WiFi avoidance: temporarily disables weak saved networks when supported, or restarts Wi-Fi on weak signal as a configurable fallback, with KernelSU WebUI

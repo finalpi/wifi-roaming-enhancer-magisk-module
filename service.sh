@@ -11,6 +11,7 @@ LOCK_DIR="$STATE_DIR/lock"
 TMP_DIR="$STATE_DIR/tmp"
 WPA_CLI=wpa_cli
 WPA_CLI_TIMEOUT=5
+CMD_WIFI_TIMEOUT=5
 
 find_wpa_cli() {
     for CANDIDATE in /vendor/bin/wpa_cli /system/bin/wpa_cli /system_ext/bin/wpa_cli /product/bin/wpa_cli wpa_cli; do
@@ -35,24 +36,38 @@ find_wpa_cli() {
 
 find_wpa_cli
 
-wpa() {
+run_timeout() {
+    SECONDS_LIMIT="$1"
+    shift
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$WPA_CLI_TIMEOUT" "$WPA_CLI" "$@"
+        timeout "$SECONDS_LIMIT" "$@"
     else
-        "$WPA_CLI" "$@"
+        "$@"
     fi
+}
+
+wpa() {
+    run_timeout "$WPA_CLI_TIMEOUT" "$WPA_CLI" "$@"
+}
+
+cmd_wifi() {
+    run_timeout "$CMD_WIFI_TIMEOUT" cmd wifi "$@"
 }
 
 mkdir -p "$STATE_DIR" "$TMP_DIR"
 
 default_config() {
     ENABLED=1
+    CONTROL_MODE=auto
     WIFI_IFACE=auto
     SCAN_INTERVAL=10
     DISABLE_RSSI=-75
     RECOVERY_RSSI=-67
     MIN_AVAILABLE_NETWORKS=1
     MAX_DISABLE_PER_SCAN=3
+    FALLBACK_WIFI_OFF_SECONDS=3
+    FALLBACK_COOLDOWN_SECONDS=120
+    FALLBACK_WEAK_COUNT=2
     LOG_ENABLED=1
     LOG_MAX_LINES=200
 }
@@ -95,8 +110,16 @@ load_config() {
     RECOVERY_RSSI=$(clamp_int "$RECOVERY_RSSI" -100 -30 -67)
     MIN_AVAILABLE_NETWORKS=$(clamp_int "$MIN_AVAILABLE_NETWORKS" 1 20 1)
     MAX_DISABLE_PER_SCAN=$(clamp_int "$MAX_DISABLE_PER_SCAN" 1 20 3)
+    FALLBACK_WIFI_OFF_SECONDS=$(clamp_int "$FALLBACK_WIFI_OFF_SECONDS" 1 120 3)
+    FALLBACK_COOLDOWN_SECONDS=$(clamp_int "$FALLBACK_COOLDOWN_SECONDS" 30 3600 120)
+    FALLBACK_WEAK_COUNT=$(clamp_int "$FALLBACK_WEAK_COUNT" 1 10 2)
     LOG_ENABLED=$(clamp_int "$LOG_ENABLED" 0 1 1)
     LOG_MAX_LINES=$(clamp_int "$LOG_MAX_LINES" 50 1000 200)
+
+    case "$CONTROL_MODE" in
+        auto|wpa_cli|wifi_restart) ;;
+        *) CONTROL_MODE=auto ;;
+    esac
 
     if [ "$RECOVERY_RSSI" -le "$DISABLE_RSSI" ]; then
         RECOVERY_RSSI=$((DISABLE_RSSI + 5))
@@ -123,15 +146,59 @@ log_msg() {
     fi
 }
 
+cmd_wifi_status() {
+    cmd_wifi status 2>/dev/null
+}
+
+cmd_wifi_rssi() {
+    STATUS_TMP="$TMP_DIR/cmd_wifi_status"
+    cmd_wifi_status > "$STATUS_TMP" 2>/dev/null || return
+    awk '
+        index($0, "RSSI:") > 0 {
+            line=$0
+            sub(/^.*RSSI:[ ]*/, "", line)
+            sub(/[^0-9-].*$/, "", line)
+            print line
+            exit
+        }
+        index($0, "SignalStrength:") > 0 {
+            line=$0
+            sub(/^.*SignalStrength:[ ]*/, "", line)
+            sub(/[^0-9-].*$/, "", line)
+            print line
+            exit
+        }
+    ' "$STATUS_TMP"
+}
+
 write_status() {
+    STATUS_MODE="$1"
+    RSSI="$2"
     {
         echo "enabled=$ENABLED"
+        echo "control_mode=$CONTROL_MODE"
+        echo "effective_mode=$STATUS_MODE"
         echo "iface=$WIFI_IFACE_RESOLVED"
+        echo "wpa_cli=$WPA_CLI"
         echo "disable_rssi=$DISABLE_RSSI"
         echo "recovery_rssi=$RECOVERY_RSSI"
         echo "scan_interval=$SCAN_INTERVAL"
+        echo "fallback_wifi_off_seconds=$FALLBACK_WIFI_OFF_SECONDS"
+        echo "fallback_cooldown_seconds=$FALLBACK_COOLDOWN_SECONDS"
+        echo "fallback_weak_count=$FALLBACK_WEAK_COUNT"
+        echo "fallback_weak_cycles=$FALLBACK_WEAK_CYCLES"
+        echo "fallback_last_restart=$LAST_FALLBACK_RESTART"
+        echo "cmd_wifi_rssi=$RSSI"
         echo "last_update=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
-        wpa -i "$WIFI_IFACE_RESOLVED" status 2>/dev/null | grep -E '^(wpa_state|ssid|bssid|ip_address)='
+        if [ "$STATUS_MODE" = "wifi_restart" ]; then
+            if [ -f "$TMP_DIR/cmd_wifi_status" ]; then
+                grep -E '^(Wifi is|WifiInfo:|NetworkCapabilities:|==== ClientModeManager|.*RSSI:|.*SignalStrength:)' "$TMP_DIR/cmd_wifi_status"
+            else
+                cmd_wifi_status | grep -E '^(Wifi is|WifiInfo:|NetworkCapabilities:|==== ClientModeManager|.*RSSI:|.*SignalStrength:)'
+            fi
+        else
+            wpa -i "$WIFI_IFACE_RESOLVED" status 2>/dev/null | grep -E '^(wpa_state|ssid|bssid|ip_address)='
+        fi
     } > "$STATUS_FILE.tmp"
     mv "$STATUS_FILE.tmp" "$STATUS_FILE"
 }
@@ -156,8 +223,11 @@ remove_disabled_id() {
 }
 
 reenable_all_module_disabled() {
-    [ -n "$WIFI_IFACE_RESOLVED" ] || return
     [ -f "$DISABLED_FILE" ] || return
+
+    if [ -z "$WIFI_IFACE_RESOLVED" ] || ! wpa -i "$WIFI_IFACE_RESOLVED" status >/dev/null 2>&1; then
+        return
+    fi
 
     while IFS='|' read -r ID SSID; do
         [ -z "$ID" ] && continue
@@ -170,6 +240,9 @@ reenable_all_module_disabled() {
 }
 
 cleanup() {
+    if [ "$FALLBACK_WIFI_DISABLED" = "1" ]; then
+        cmd_wifi set-wifi-enabled enabled >/dev/null 2>&1
+    fi
     reenable_all_module_disabled
     rm -f "$LOCK_DIR/pid" "$LOCK_DIR/cmd" 2>/dev/null
     rmdir "$LOCK_DIR" 2>/dev/null
@@ -312,6 +385,96 @@ disable_weak_networks() {
     done < "$VISIBLE"
 }
 
+run_wpa_cli_cycle() {
+    write_status "wpa_cli" ""
+
+    [ "$ENABLED" = "1" ] || return
+
+    SAVED_FILE="$TMP_DIR/saved"
+    SCAN_FILE="$TMP_DIR/scan"
+    VISIBLE_FILE="$TMP_DIR/visible"
+
+    if ! build_saved_file "$SAVED_FILE"; then
+        log_msg "skip cycle: no saved networks or list_networks failed"
+        return
+    fi
+
+    if ! build_scan_file "$SCAN_FILE"; then
+        log_msg "skip cycle: no scan results or scan failed"
+        return
+    fi
+
+    if ! build_visible_saved_file "$SAVED_FILE" "$SCAN_FILE" "$VISIBLE_FILE"; then
+        log_msg "skip cycle: no visible saved networks"
+        return
+    fi
+
+    recover_networks "$VISIBLE_FILE"
+    disable_weak_networks "$VISIBLE_FILE"
+
+    if wpa -i "$WIFI_IFACE_RESOLVED" status 2>/dev/null | grep -F 'wpa_state=COMPLETED' >/dev/null 2>&1; then
+        DISCONNECTED_CYCLES=0
+    else
+        DISCONNECTED_CYCLES=$((DISCONNECTED_CYCLES + 1))
+        if [ "$DISCONNECTED_CYCLES" -ge 3 ]; then
+            log_msg "emergency re-enable: disconnected_cycles=$DISCONNECTED_CYCLES"
+            reenable_all_module_disabled
+            DISCONNECTED_CYCLES=0
+        fi
+    fi
+}
+
+fallback_restart_wifi() {
+    NOW=$(date +%s 2>/dev/null)
+    [ -z "$NOW" ] && NOW=0
+
+    if [ "$LAST_FALLBACK_RESTART" -gt 0 ] && [ $((NOW - LAST_FALLBACK_RESTART)) -lt "$FALLBACK_COOLDOWN_SECONDS" ]; then
+        log_msg "fallback skip restart reason=cooldown rssi=$CMD_WIFI_RSSI cooldown=$FALLBACK_COOLDOWN_SECONDS"
+        return
+    fi
+
+    log_msg "fallback restarting wifi rssi=$CMD_WIFI_RSSI threshold=$DISABLE_RSSI off_seconds=$FALLBACK_WIFI_OFF_SECONDS"
+    FALLBACK_WIFI_DISABLED=1
+    if ! cmd_wifi set-wifi-enabled disabled >/dev/null 2>&1; then
+        FALLBACK_WIFI_DISABLED=0
+        log_msg "fallback failed to disable wifi"
+        return
+    fi
+    sleep "$FALLBACK_WIFI_OFF_SECONDS"
+    if cmd_wifi set-wifi-enabled enabled >/dev/null 2>&1; then
+        log_msg "fallback re-enabled wifi"
+    else
+        log_msg "fallback failed to re-enable wifi"
+    fi
+    FALLBACK_WIFI_DISABLED=0
+    LAST_FALLBACK_RESTART="$NOW"
+    FALLBACK_WEAK_CYCLES=0
+}
+
+run_wifi_restart_cycle() {
+    CMD_WIFI_RSSI=$(cmd_wifi_rssi)
+    write_status "wifi_restart" "$CMD_WIFI_RSSI"
+
+    [ "$ENABLED" = "1" ] || return
+
+    if ! is_int "$CMD_WIFI_RSSI"; then
+        FALLBACK_WEAK_CYCLES=0
+        log_msg "fallback skip: cannot parse RSSI from cmd wifi status"
+        return
+    fi
+
+    if [ "$CMD_WIFI_RSSI" -lt "$DISABLE_RSSI" ]; then
+        FALLBACK_WEAK_CYCLES=$((FALLBACK_WEAK_CYCLES + 1))
+        log_msg "fallback weak sample rssi=$CMD_WIFI_RSSI threshold=$DISABLE_RSSI count=$FALLBACK_WEAK_CYCLES/$FALLBACK_WEAK_COUNT"
+        if [ "$FALLBACK_WEAK_CYCLES" -ge "$FALLBACK_WEAK_COUNT" ]; then
+            fallback_restart_wifi
+        fi
+    else
+        [ "$FALLBACK_WEAK_CYCLES" -ne 0 ] && log_msg "fallback signal recovered rssi=$CMD_WIFI_RSSI"
+        FALLBACK_WEAK_CYCLES=0
+    fi
+}
+
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     OLD_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null)
     if is_our_pid "$OLD_PID"; then
@@ -328,62 +491,41 @@ echo "$MODDIR/service.sh" > "$LOCK_DIR/cmd"
 trap cleanup INT TERM EXIT
 
 load_config
-resolve_iface
-log_msg "service started iface=$WIFI_IFACE_RESOLVED wpa_cli=$WPA_CLI"
+WIFI_IFACE_RESOLVED="wlan0"
+log_msg "service started iface=$WIFI_IFACE_RESOLVED wpa_cli=$WPA_CLI control_mode=$CONTROL_MODE"
 reenable_all_module_disabled
 DISCONNECTED_CYCLES=0
+FALLBACK_WEAK_CYCLES=0
+LAST_FALLBACK_RESTART=0
+FALLBACK_WIFI_DISABLED=0
+WPA_CLI_FAILED=0
+CMD_WIFI_RSSI=""
 
 while true; do
     load_config
 
-    if ! resolve_iface; then
-        log_msg "wifi interface not ready, fallback=$WIFI_IFACE_RESOLVED"
-        sleep "$SCAN_INTERVAL"
-        continue
-    fi
-
-    write_status
-
-    if [ "$ENABLED" != "1" ]; then
-        sleep "$SCAN_INTERVAL"
-        continue
-    fi
-
-    SAVED_FILE="$TMP_DIR/saved"
-    SCAN_FILE="$TMP_DIR/scan"
-    VISIBLE_FILE="$TMP_DIR/visible"
-
-    if ! build_saved_file "$SAVED_FILE"; then
-        log_msg "skip cycle: no saved networks or list_networks failed"
-        sleep "$SCAN_INTERVAL"
-        continue
-    fi
-
-    if ! build_scan_file "$SCAN_FILE"; then
-        log_msg "skip cycle: no scan results or scan failed"
-        sleep "$SCAN_INTERVAL"
-        continue
-    fi
-
-    if ! build_visible_saved_file "$SAVED_FILE" "$SCAN_FILE" "$VISIBLE_FILE"; then
-        log_msg "skip cycle: no visible saved networks"
-        sleep "$SCAN_INTERVAL"
-        continue
-    fi
-
-    recover_networks "$VISIBLE_FILE"
-    disable_weak_networks "$VISIBLE_FILE"
-
-    if wpa -i "$WIFI_IFACE_RESOLVED" status 2>/dev/null | grep -F 'wpa_state=COMPLETED' >/dev/null 2>&1; then
-        DISCONNECTED_CYCLES=0
-    else
-        DISCONNECTED_CYCLES=$((DISCONNECTED_CYCLES + 1))
-        if [ "$DISCONNECTED_CYCLES" -ge 3 ]; then
-            log_msg "emergency re-enable: disconnected_cycles=$DISCONNECTED_CYCLES"
-            reenable_all_module_disabled
-            DISCONNECTED_CYCLES=0
-        fi
-    fi
+    case "$CONTROL_MODE" in
+        wifi_restart)
+            run_wifi_restart_cycle
+            ;;
+        wpa_cli)
+            if resolve_iface; then
+                run_wpa_cli_cycle
+            else
+                write_status "wpa_cli" ""
+                log_msg "wifi interface not ready for wpa_cli mode, iface=$WIFI_IFACE_RESOLVED"
+            fi
+            ;;
+        auto|*)
+            if [ "$WPA_CLI_FAILED" != "1" ] && resolve_iface; then
+                run_wpa_cli_cycle
+            else
+                WPA_CLI_FAILED=1
+                log_msg "auto mode falling back to wifi_restart because wpa_cli is unavailable"
+                run_wifi_restart_cycle
+            fi
+            ;;
+    esac
 
     sleep "$SCAN_INTERVAL"
 done
