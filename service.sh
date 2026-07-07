@@ -151,9 +151,7 @@ cmd_wifi_status() {
 }
 
 cmd_wifi_rssi() {
-    STATUS_TMP="$TMP_DIR/cmd_wifi_status"
-    cmd_wifi_status > "$STATUS_TMP" 2>/dev/null || return
-    awk '
+    cmd_wifi_status | awk '
         index($0, "RSSI:") > 0 {
             line=$0
             sub(/^.*RSSI:[ ]*/, "", line)
@@ -168,7 +166,7 @@ cmd_wifi_rssi() {
             print line
             exit
         }
-    ' "$STATUS_TMP"
+    '
 }
 
 write_status() {
@@ -488,7 +486,8 @@ fi
 
 echo $$ > "$LOCK_DIR/pid"
 echo "$MODDIR/service.sh" > "$LOCK_DIR/cmd"
-trap cleanup INT TERM EXIT
+trap 'cleanup; exit 0' INT TERM
+trap cleanup EXIT
 
 load_config
 WIFI_IFACE_RESOLVED="wlan0"
